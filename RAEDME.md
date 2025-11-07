@@ -7,10 +7,9 @@ DeepDDH is a deep learning system designed for automated **Developmental Dysplas
 ## System Architecture
 
 The DeepDDH system adopts a modular design with three core components:
+![An Overview figure of the DeepDDH system.](DeepDDH_model_figure.png)
 
 ### 1. Backbone & Attention Module
-
-
 
 * **Backbone**: Dilated-ResNet50 (enhanced spatial resolution preservation for medical imaging)
 
