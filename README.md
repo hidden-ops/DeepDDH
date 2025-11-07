@@ -152,14 +152,6 @@ From optimized segmentation results, the system automatically executes:
 * **Clinical Alignment**: Directly maps to clinical Graf's grading workflow
 
 ## Citation
-Liu, R., Zhang, Y., Luo, X., Zheng, Y., Liu, Q., Liu, M., & Jiang, L. (2025). QualityDDH: visualized standardization of neonatal hip ultrasound via a structural prior regression framework. Visual Computer, 41(13), 11589–11602. [https://doi.org/10.1007/s00371-025-04121-2
-        
-        ]
-Liu, M., Liu, R., Shu, J., Liu, Q., Zhang, Y., & Jiang, L. (2025). AutoDDH: A dual-attention multi-task network for grading developmental dysplasia of the hip in ultrasound images. *Visual Computer*, *41*(10), 7013–7025. [https://doi.org/10.1007/s00371-024-03789-2
-        
-        ](https://doi.org/10.1007/s00371-024-03789-2
-        
-        )
-Liu, R., Liu, M., Sheng, B., Li, H., Li, P., Song, H., Zhang, P., Jiang, L., & Shen, D. (2021). NHBS-Net: A feature fusion attention network for ultrasound neonatal hip bone segmentation. IEEE Transactions on Medical Imaging, 40(12), 3446–3458. [https://doi.org/10.1109/TMI.2021.3087857
-        
-        ]
+Liu, R., Zhang, Y., Luo, X., Zheng, Y., Liu, Q., Liu, M., & Jiang, L. (2025). QualityDDH: visualized standardization of neonatal hip ultrasound via a structural prior regression framework. Visual Computer, 41(13), 11589–11602. https://doi.org/10.1007/s00371-025-04121-2
+Liu, M., Liu, R., Shu, J., Liu, Q., Zhang, Y., & Jiang, L. (2025). AutoDDH: A dual-attention multi-task network for grading developmental dysplasia of the hip in ultrasound images. *Visual Computer*, *41*(10), 7013–7025. https://doi.org/10.1007/s00371-024-03789-2
+Liu, R., Liu, M., Sheng, B., Li, H., Li, P., Song, H., Zhang, P., Jiang, L., & Shen, D. (2021). NHBS-Net: A feature fusion attention network for ultrasound neonatal hip bone segmentation. IEEE Transactions on Medical Imaging, 40(12), 3446–3458. https://doi.org/10.1109/TMI.2021.3087857
