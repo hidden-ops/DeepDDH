@@ -151,6 +151,65 @@ From optimized segmentation results, the system automatically executes:
 
 * **Clinical Alignment**: Directly maps to clinical Graf's grading workflow
 
+## DeepDDH-Code-Run-Guide
+### 1. Environment Setup
+```bash
+git clone https://github.com/hidden-ops/DeepDDH.git
+cd DeepDDH
+conda create -n ddh python=3.12 -y
+conda activate ddh
+pip install -r requirements.txt
+```
+
+### 2. Dataset Foldering
+```
+data/
+├── PreD/                       # Stage-1: 8-class anatomical segmentation (0: background)
+│   ├── train/imgs/*.png
+│   ├── train/seg/*.png         # single-channel, pixel value 0-7
+│   ├── val/(same structure)
+│   └── test/(same structure)
+└── seg_detD_bony/              # Stage-2: 7-class bony-landmark segmentation
+    ├── train/imgs/*.png
+    ├── train/seg/*.png        # 8-class anatomical masks
+    ├── train/bony_mask/*.png  # 7-class bony masks
+    ├── val/(same structure)
+    └── test/(same structure)
+```
+Label rule: pixel value = class index (0 = background).
+
+### 3. Training Pipeline
+#### 3.1  Stage-1 Anatomical Pre-training
+```bash
+python STEP1_pretrain_PreD.py -e 50 -b 4 -l 1e-4 -s 1
+```
+
+* Logs: runs/ (TensorBoard)
+* Best model auto-saved: checkpoint/PreD/.../best_model.pth
+#### 3.2  Stage-2 Bony-landmark Fine-tuning
+```bash
+python STEP2_train_Det_bony.py -e 50 -b 4 -l 1e-4 -s 1
+```
+
+* Logs: Output: checkpoint/seg_detD_bony/.../best_model.pth
+
+### 4. Monitor Training
+```bash
+tensorboard --logdir=runs --port=6006
+# open browser at http://localhost:6006
+```
+
+### 5. Inference Snippet
+```bash
+import torch
+from ddhnet_model.dilated_ddhnet_bony import DDHNet_Bony
+
+net = DDHNet_Bony(n_classes=8, bony_class=7, n_channels=3)
+net.load_state_dict(torch.load('checkpoint/seg_detD_bony/xxx/best_model.pth', map_location='cpu'))
+net.eval()
+# feed your image tensor ...
+```
+
 ## Citation
 * Liu, R., Zhang, Y., Luo, X., Zheng, Y., Liu, Q., Liu, M., & Jiang, L. (2025). QualityDDH: visualized standardization of neonatal hip ultrasound via a structural prior regression framework. Visual Computer, 41(13), 11589–11602. https://doi.org/10.1007/s00371-025-04121-2
 * Liu, M., Liu, R., Shu, J., Liu, Q., Zhang, Y., & Jiang, L. (2025). AutoDDH: A dual-attention multi-task network for grading developmental dysplasia of the hip in ultrasound images. *Visual Computer*, *41*(10), 7013–7025. https://doi.org/10.1007/s00371-024-03789-2   
