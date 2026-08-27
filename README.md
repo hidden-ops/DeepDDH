@@ -35,15 +35,18 @@ STEP2 initializes compatible shared layers from STEP1 and trains `DDHNet_Bony` w
 
 STEP3 loads the plain `state_dict` produced by STEP2, performs batched inference, and saves one PNG per input image for each output head. Raw class-ID maps are the recommended format. The legacy `class_id × 30` grayscale format remains available for compatibility.
 
-### STEP4: landmarks and angles
+### STEP4: quality gating, landmarks, angles, and Graf classification
 
 STEP4 performs deterministic post-processing; it does not run another neural network. It:
 
-1. extracts the upper foreground edge of the bony-substructure map;
-2. obtains five bony landmarks from bony class IDs 2–6;
-3. calculates the centroid of the anatomical class configured as the labrum (default: class 5);
-4. calculates the parallel, alpha, and beta angles using the original project formulas;
-5. writes per-case JSON and CSV records.
+1. checks that all seven foreground classes are present in the 8-class anatomical map (background + seven anatomical structures);
+2. checks that all six foreground classes are present in the 7-class bony map (background + six iliac substructures);
+3. extracts the bony upper edge, obtains five bony landmarks, and calculates the parallel angle;
+4. classifies the image as **standard** only when both class-presence checks pass and the parallel angle is within ±5°; otherwise it is **non-standard**;
+5. calculates α and β angles and, for standard images, applies the grouped Graf rules described below;
+6. writes per-case JSON and CSV records including the three quality checks, angle measurements, and Graf output.
+
+This quality gate follows the released DeepDDH workflow: failure of any one of the three checks results in a non-standard image, and non-standard images do not proceed to the final Graf classification.
 
 The implemented bony-label-to-landmark mapping is:
 
@@ -62,6 +65,20 @@ parallel = -angle(K0, K1)
 alpha    =  angle(K2, K3) - parallel
 beta     = -angle(K4, labrum_centroid) + parallel
 ```
+
+### Grouped Graf rules used in STEP4
+
+STEP4 calculates alpha angle. The grouped classification table supplied for this release defines the following categories from alpha angle and infant age:
+
+| Graf DDH type | alpha angle | Age | Description |
+| --- | --- | --- | --- |
+| Type I | ≥60° | Any age | Mature hip |
+| Type IIa | ≥50° and <60° | ≤90 days | Mild dysplasia |
+| Type IIb | ≥50° and <60° | >90 days | Mild dysplasia |
+| Type IIc / Type D | ≥43° and <50° | Any age | Severe dysplasia |
+| Type III / Type IV | <43° | Any age | Dislocation |
+
+The implementation operationalises three months as 90 days, consistent with the study analysis rules. β angle is retained in the output. Because the supplied grouped table does not specify β-angle thresholds for separating **IIc from D** or **III from IV**, STEP4 reports these as grouped categories rather than inventing unsupported finer cut-offs. If age is unavailable for an α angle between 50° and 60°, the output is `Type IIa/IIb` until age is supplied.
 
 This label mapping is dataset-specific. Confirm it against the annotation protocol before applying STEP4 to a newly encoded dataset.
 
@@ -178,7 +195,7 @@ Run the following commands from the repository root. Paths passed explicitly on 
 The complete default three-seed configuration is:
 
 ```bash
-python scripts/STEP1_pretrain_PreD.py --model-name dilated_ddhnet --n-classes 8 --epochs 30 --batch-sizes 4 --lr 1e-5 --scale 1.0 --seeds 2026 2027 2028 --patience 5 --min-delta 0.001 --monitor-metric val_loss --num-workers-train 8 --num-workers-val 4 --base-path ./checkpoint/Stage-1
+python scripts/STEP1_pretrain_PreD.py --model-name dilated_ddhnet --n-classes 8 --epochs 100 --batch-sizes 16 --lr 1e-5 --scale 1.0 --seeds 2026 2027 2028 --patience 10 --min-delta 0.001 --monitor-metric val_loss --num-workers-train 8 --num-workers-val 4 --base-path ./checkpoint/Stage-1
 ```
 
 The equivalent short command is:
@@ -202,7 +219,7 @@ checkpoint/Stage-1/<model_name>/bs_<batch_size>/seed_<seed>/
 Use the matching STEP1 best checkpoint for each seed and batch size:
 
 ```bash
-python scripts/STEP2_train_Det_bony.py --n-classes 8 --bony-class 7 --epochs 30 --batch-sizes 4 --lr 1e-5 --scale 1.0 --seeds 2026 2027 2028 --patience 10 --min-delta 1e-5 --monitor-metric val_total_loss --load-template "./checkpoint/Stage-1/dilated_ddhnet/bs_{batch_size}/seed_{seed}/checkpoints/best_model.pth" --num-workers-train 8 --num-workers-val 4 --base-path ./checkpoint/Stage-2
+python scripts/STEP2_train_Det_bony.py --n-classes 8 --bony-class 7 --epochs 100 --batch-sizes 16 --lr 1e-5 --scale 1.0 --seeds 2026 2027 2028 --patience 10 --min-delta 1e-5 --monitor-metric val_total_loss --load-template "./checkpoint/Stage-1/dilated_ddhnet/bs_{batch_size}/seed_{seed}/checkpoints/best_model.pth" --num-workers-train 8 --num-workers-val 4 --base-path ./checkpoint/Stage-2
 ```
 
 `--load-template` substitutes `{batch_size}` and `{seed}`. A single checkpoint can instead be supplied with `--load`. If neither option is present, STEP2 starts from ImageNet initialization and is no longer the intended two-stage protocol.
