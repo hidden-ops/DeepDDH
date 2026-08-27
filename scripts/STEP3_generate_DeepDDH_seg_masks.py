@@ -214,8 +214,13 @@ def get_args() -> argparse.Namespace:
     parser.add_argument('--amp', action='store_true', help='Use CUDA automatic mixed precision.')
     parser.add_argument(
         '--normalize',
-        action='store_true',
-        help='Divide input pixels by 255. Leave disabled to match the current Stage-2 loader.',
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help=(
+            'Use [0, 1] network inputs. Already-normalised inputs are preserved; '
+            'conventional 8-bit inputs are divided by 255. Use --no-normalize only '
+            'for a checkpoint intentionally trained on an unnormalised intensity scale.'
+        ),
     )
     parser.add_argument(
         '--mask-encoding',

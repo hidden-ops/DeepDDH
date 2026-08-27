@@ -14,7 +14,7 @@ SUPPORTED_IMAGE_EXTENSIONS = {'.png', '.jpg', '.jpeg', '.bmp', '.tif', '.tiff'}
 class InferenceDataset(Dataset):
     """Load an unlabeled image directory for DeepDDH inference."""
 
-    def __init__(self, image_dir: str, scale: float = 1.0, normalize: bool = False):
+    def __init__(self, image_dir: str, scale: float = 1.0, normalize: bool = True):
         self.image_dir = Path(image_dir).expanduser().resolve()
         self.scale = scale
         self.normalize = normalize
@@ -70,7 +70,7 @@ class InferenceDataset(Dataset):
                 image = image.resize((scaled_width, scaled_height), resample=Image.Resampling.BILINEAR)
             array = np.asarray(image, dtype=np.float32)
 
-        if self.normalize:
+        if self.normalize and array.size and float(array.max()) > 1.0:
             array = array / 255.0
         array = np.ascontiguousarray(array.transpose(2, 0, 1))
 

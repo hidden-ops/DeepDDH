@@ -39,61 +39,74 @@ class BasicDataset(Dataset):
             )
 
         random_add_num = len(self.ids) % batch_size
-        for i in range(random_add_num):
+        for _ in range(random_add_num):
             random_integer = random.randint(0, len(self.ids) - 1)
             self.ids.append(self.ids[random_integer])
 
-        #print('id:', self.ids)
         logging.info(f'Creating dataset with {len(self.ids)} examples')
 
     def __len__(self):
         return len(self.ids)
 
     @classmethod
-    def preprocess(cls, pil_img, scale):
+    def preprocess_image(cls, pil_img, scale):
+        """Prepare a network image while avoiding accidental double normalisation.
+
+        The study preprocessing supplied network-ready [0, 1] images upstream.  This
+        loader preserves such inputs.  For conventional 8-bit PNG inputs, values are
+        scaled to [0, 1] as a compatibility safeguard.  Images are always returned as
+        float32 CHW tensors; they are never cast through uint8/ByteTensor after scaling.
+        """
         w, h = pil_img.size
-        newW, newH = int(scale * w), int(scale * h)
-        assert newW > 0 and newH > 0, 'Scale is too small'
-        pil_img = pil_img.resize((newW, newH))
+        new_w, new_h = int(scale * w), int(scale * h)
+        assert new_w > 0 and new_h > 0, 'Scale is too small'
+        if (new_w, new_h) != pil_img.size:
+            pil_img = pil_img.resize((new_w, new_h), resample=Image.Resampling.BILINEAR)
 
-        #print(pil_img.size)
-        img_nd = np.array(pil_img)
-        #print(img_nd.shape)
+        img_nd = np.asarray(pil_img)
+        if img_nd.ndim == 2:
+            img_nd = np.repeat(img_nd[..., None], 3, axis=2)
+        elif img_nd.ndim == 3 and img_nd.shape[2] > 3:
+            img_nd = img_nd[:, :, :3]
 
-        if len(img_nd.shape) == 2 :
-            img_nd = np.expand_dims(img_nd, axis=2)
-            img_nd = np.repeat(img_nd, 3, axis=2)
+        img_nd = img_nd.astype(np.float32, copy=False)
+        if img_nd.size and float(img_nd.max()) > 1.0:
+            img_nd = img_nd / 255.0
 
-        # HWC to CHW
-        img_trans = img_nd.transpose((2, 0, 1))
+        return np.ascontiguousarray(img_nd.transpose((2, 0, 1)), dtype=np.float32)
 
-        if img_trans.max() == 255:
-            img_trans = img_trans / 255
+    @classmethod
+    def preprocess_mask(cls, pil_img, scale):
+        w, h = pil_img.size
+        new_w, new_h = int(scale * w), int(scale * h)
+        assert new_w > 0 and new_h > 0, 'Scale is too small'
+        if (new_w, new_h) != pil_img.size:
+            pil_img = pil_img.resize((new_w, new_h), resample=Image.Resampling.NEAREST)
 
-        return img_trans
+        mask_nd = np.asarray(pil_img)
+        if mask_nd.ndim == 3:
+            mask_nd = mask_nd[:, :, 0]
+        return np.ascontiguousarray(mask_nd, dtype=np.int64)
 
     def __getitem__(self, i):
         idx = self.ids[i]
-        #print('index:', idx)
         mask_file = glob(self.masks_dir + idx + '.png')
         img_file = glob(self.imgs_dir + idx + '.png')
-        #print('mask_file:', mask_file)
-        #print('img_file:', img_file)
         assert len(mask_file) == 1, \
             f'Either no mask or multiple masks found for the ID {idx}: {mask_file}'
         assert len(img_file) == 1, \
             f'Either no image or multiple images found for the ID {idx}: {img_file}'
+
         mask = Image.open(mask_file[0])
         img = Image.open(img_file[0])
 
         assert img.size == mask.size, \
             f'Image and mask {idx} should be the same size, but are {img.size} and {mask.size}'
 
-        img = self.preprocess(img, self.scale)
-        mask = self.preprocess(mask, self.scale)
-        #print('img:', img.shape)
-        #print('mask:', mask[0].shape)
-        #print('mask_M:', np.max(mask[0]))
-        #print('img:', torch.from_numpy(img).type(torch.ByteTensor), 'mask:', torch.from_numpy(mask[0]).type(torch.ByteTensor))
-        return {'image': torch.from_numpy(img).type(torch.ByteTensor), 'mask': torch.from_numpy(mask[0]).type(torch.ByteTensor)}
+        img = self.preprocess_image(img, self.scale)
+        mask = self.preprocess_mask(mask, self.scale)
 
+        return {
+            'image': torch.from_numpy(img).to(dtype=torch.float32),
+            'mask': torch.from_numpy(mask).to(dtype=torch.long),
+        }
