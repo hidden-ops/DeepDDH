@@ -26,7 +26,7 @@ from tqdm import tqdm
 from ddhnet_model.dilated_ddhnet_bony import DDHNet_Bony
 from utils.dataset_bony import BasicDataset
 from utils.segLoss import SegmentationLosses
-from utils.CentroidMSELoss import CentroidMSELoss
+from utils.CentroidMSELoss import CENTROID_LOSS_MODES, build_centroid_loss
 
 
 tr_dir_img = str(PROJECT_ROOT / 'data' / 'Training' / 'imgs') + os.sep
@@ -174,11 +174,16 @@ def build_model(n_classes: int, bony_class: int):
     )
 
 
-def build_criteria(device: torch.device, n_classes: int, bony_class: int):
+def build_criteria(
+    device: torch.device,
+    n_classes: int,
+    bony_class: int,
+    centroid_loss_mode: str = 'soft',
+):
     seg_criterion = SegmentationLosses(cuda=(device.type == 'cuda'), batch_average=False)
     bony_criterion = SegmentationLosses(cuda=(device.type == 'cuda'), batch_average=False)
-    seg_centroid_loss = CentroidMSELoss(n_class=n_classes)
-    bony_centroid_loss = CentroidMSELoss(n_class=bony_class)
+    seg_centroid_loss = build_centroid_loss(centroid_loss_mode, n_class=n_classes)
+    bony_centroid_loss = build_centroid_loss(centroid_loss_mode, n_class=bony_class)
     return seg_criterion, bony_criterion, seg_centroid_loss, bony_centroid_loss
 
 
@@ -279,18 +284,25 @@ def compute_stage2_losses(
     # seg branch
     seg_ce_loss = seg_criterion.CrossEntropyLoss(seg_logits, true_masks)
     seg_fl_loss = seg_criterion.FocalLoss(seg_logits, true_masks, gamma=2, alpha=0.5)
-    seg_ct_loss = seg_centroid_loss(seg_logits, true_masks)
+    if seg_centroid_loss is not None and seg_centroid_weight > 0:
+        seg_ct_loss = seg_centroid_loss(seg_logits, true_masks)
+    else:
+        seg_ct_loss = seg_logits.sum() * 0.0
     seg_loss = seg_ce_loss + seg_fl_loss + seg_centroid_weight * seg_ct_loss
 
     # bony branch
     bony_ce_loss = bony_criterion.CrossEntropyLoss(bony_logits, true_bony)
     bony_fl_loss = bony_criterion.FocalLoss(bony_logits, true_bony, gamma=2, alpha=0.5)
 
-    if use_bony_centroid_loss and bony_centroid_loss is not None:
+    if (
+        use_bony_centroid_loss
+        and bony_centroid_loss is not None
+        and bony_centroid_weight > 0
+    ):
         bony_ct_loss = bony_centroid_loss(bony_logits, true_bony)
         bony_loss = bony_ce_loss + bony_fl_loss + bony_centroid_weight * bony_ct_loss
     else:
-        bony_ct_loss = torch.tensor(0.0, device=imgs.device)
+        bony_ct_loss = bony_logits.sum() * 0.0
         bony_loss = bony_ce_loss + bony_fl_loss
 
     total_loss = seg_loss + bony_loss
@@ -448,6 +460,7 @@ def train_one_run(
     use_bony_centroid_loss: bool = False,
     seg_centroid_weight: float = 0.1,
     bony_centroid_weight: float = 0.1,
+    centroid_loss_mode: str = 'soft',
     ignore_background: bool = True
 ) -> Dict[str, Any]:
 
@@ -491,8 +504,18 @@ def train_one_run(
         load_partial_checkpoint(net, load_path, device=device)
 
     seg_criterion, bony_criterion, seg_centroid_loss, bony_centroid_loss = build_criteria(
-        device=device, n_classes=n_classes, bony_class=bony_class
+        device=device,
+        n_classes=n_classes,
+        bony_class=bony_class,
+        centroid_loss_mode=centroid_loss_mode,
     )
+    if centroid_loss_mode == 'legacy-hard':
+        logging.warning(
+            'Using legacy-hard centroid loss for archival reproduction. '
+            'Its argmax operation has no gradient with respect to logits.'
+        )
+    elif centroid_loss_mode == 'off':
+        logging.info('Centroid losses are disabled for this run.')
 
     optimizer = optim.RMSprop(
         net.parameters(),
@@ -527,6 +550,7 @@ def train_one_run(
         'use_bony_centroid_loss': use_bony_centroid_loss,
         'seg_centroid_weight': seg_centroid_weight,
         'bony_centroid_weight': bony_centroid_weight,
+        'centroid_loss_mode': centroid_loss_mode,
         'ignore_background': ignore_background
     }
     save_json(config, os.path.join(run_dir, 'config.json'))
@@ -534,7 +558,8 @@ def train_one_run(
     logging.info(
         f'Starting Stage-2 run | seed={seed} | batch_size={batch_size} | lr={lr} | '
         f'train={len(train_set)} | val={len(val_set)} | monitor_metric={monitor_metric} | '
-        f'monitor_mode={monitor_mode} | load_path={load_path}'
+        f'monitor_mode={monitor_mode} | centroid_loss_mode={centroid_loss_mode} | '
+        f'load_path={load_path}'
     )
 
     history = []
@@ -764,6 +789,7 @@ def train_one_run(
         'stopped_early': int(stopped_early),
         'runtime_sec': runtime_sec,
         'load_path': load_path,
+        'centroid_loss_mode': centroid_loss_mode,
         'best_checkpoint': best_ckpt_path,
         'last_checkpoint': last_ckpt_path
     }
@@ -778,7 +804,11 @@ def collect_run_summaries(root_dir: str) -> List[Dict[str, Any]]:
         if 'run_summary.json' in filenames:
             json_path = os.path.join(dirpath, 'run_summary.json')
             with open(json_path, 'r', encoding='utf-8') as f:
-                summaries.append(json.load(f))
+                summary = json.load(f)
+                # Runs created before the differentiable implementation used the
+                # historical hard-argmax centroid calculation.
+                summary.setdefault('centroid_loss_mode', 'legacy-hard')
+                summaries.append(summary)
     return summaries
 
 
@@ -799,7 +829,7 @@ def save_experiment_summary(root_dir: str) -> None:
         'final_val_seg_loss', 'final_val_bony_loss',
         'final_val_seg_mean_dice', 'final_val_bony_mean_dice', 'final_val_joint_mean_dice',
         'stopped_early', 'runtime_sec',
-        'load_path', 'best_checkpoint', 'last_checkpoint'
+        'load_path', 'centroid_loss_mode', 'best_checkpoint', 'last_checkpoint'
     ]
 
     with open(csv_path, 'w', newline='', encoding='utf-8') as f:
@@ -810,7 +840,7 @@ def save_experiment_summary(root_dir: str) -> None:
 
     grouped = {}
     for row in summaries:
-        key = (row['batch_size'], row['monitor_metric'])
+        key = (row['batch_size'], row['monitor_metric'], row['centroid_loss_mode'])
         grouped.setdefault(key, []).append(row)
 
     stat_path = os.path.join(root_dir, 'experiment_summary_stats.csv')
@@ -818,7 +848,7 @@ def save_experiment_summary(root_dir: str) -> None:
         writer = csv.DictWriter(
             f,
             fieldnames=[
-                'batch_size', 'monitor_metric', 'n_runs',
+                'batch_size', 'monitor_metric', 'centroid_loss_mode', 'n_runs',
                 'mean_best_val_total_loss', 'sd_best_val_total_loss',
                 'mean_best_val_seg_mean_dice', 'sd_best_val_seg_mean_dice',
                 'mean_best_val_bony_mean_dice', 'sd_best_val_bony_mean_dice',
@@ -828,7 +858,7 @@ def save_experiment_summary(root_dir: str) -> None:
         )
         writer.writeheader()
 
-        for (batch_size, monitor_metric), rows in grouped.items():
+        for (batch_size, monitor_metric, centroid_loss_mode), rows in grouped.items():
             best_total = np.array([float(r['best_val_total_loss']) for r in rows], dtype=np.float32)
             best_seg_dice = np.array([float(r['best_val_seg_mean_dice']) for r in rows], dtype=np.float32)
             best_bony_dice = np.array([float(r['best_val_bony_mean_dice']) for r in rows], dtype=np.float32)
@@ -838,6 +868,7 @@ def save_experiment_summary(root_dir: str) -> None:
             writer.writerow({
                 'batch_size': batch_size,
                 'monitor_metric': monitor_metric,
+                'centroid_loss_mode': centroid_loss_mode,
                 'n_runs': len(rows),
                 'mean_best_val_total_loss': float(best_total.mean()),
                 'sd_best_val_total_loss': float(best_total.std(ddof=1)) if len(best_total) > 1 else 0.0,
@@ -896,6 +927,16 @@ def get_args():
     parser.add_argument('--base-path', type=str, default=base_path)
 
     parser.add_argument('--use-bony-centroid-loss', action='store_true')
+    parser.add_argument(
+        '--centroid-loss-mode',
+        choices=CENTROID_LOSS_MODES,
+        default='soft',
+        help=(
+            'soft: differentiable normalized centroid loss (recommended); '
+            'legacy-hard: historical zero-gradient argmax implementation; '
+            'off: disable centroid terms.'
+        ),
+    )
     parser.add_argument('--seg-centroid-weight', type=float, default=0.1)
     parser.add_argument('--bony-centroid-weight', type=float, default=0.1)
     parser.add_argument('--include-background-in-dice', action='store_true')
@@ -951,6 +992,7 @@ if __name__ == '__main__':
                     use_bony_centroid_loss=args.use_bony_centroid_loss,
                     seg_centroid_weight=args.seg_centroid_weight,
                     bony_centroid_weight=args.bony_centroid_weight,
+                    centroid_loss_mode=args.centroid_loss_mode,
                     ignore_background=(not args.include_background_in_dice)
                 )
 
