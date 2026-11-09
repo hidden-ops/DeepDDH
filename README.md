@@ -1,12 +1,12 @@
-# DeepDDH: Deep Learning-Based DDH Diagnostic System
+# DeepDDH: A Deep Learning Framework for DDH Ultrasound Analysis
 
 ## Overview
 
-DeepDDH is a deep learning system designed for automated **Developmental Dysplasia of the Hip (DDH)** diagnosis using ultrasound images. It integrates anatomical segmentation, quality assurance, and diagnostic decision support to provide standardized Graf-based grading, enabling accurate and consistent hip joint assessment.
+DeepDDH is a deep learning system designed for supporting **Developmental Dysplasia of the Hip (DDH)** diagnosis using ultrasound images. It integrates anatomical segmentation, quality assurance, and diagnostic decision support to provide standardized Graf-based grading, enabling accurate and consistent hip joint assessment.
 
 ## System Architecture
 
-The DeepDDH system adopts a modular design with three core components:
+The DeepDDH system adopts a modular design with four core components:
 ![An Overview figure of the DeepDDH system.](DeepDDH_model_figure.png)
 
 ## Pipeline overview
@@ -267,7 +267,7 @@ Important STEP3 options:
 
 - `--mask-encoding class_id` is the recommended default.
 - `--mask-encoding times_30` writes the legacy values 0, 30, 60, ... .
-- `--normalize` divides image pixels by 255. Leave it disabled to match the current STEP2 training loader.
+- `--normalize` divides image pixels by 255. 
 - `--amp` enables CUDA mixed precision.
 - `--scale` resizes network input; output maps are resized back to the original image size with nearest-neighbor interpolation.
 - `--overwrite` permits replacement of existing output PNGs.
