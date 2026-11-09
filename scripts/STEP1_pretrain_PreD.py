@@ -329,8 +329,8 @@ def train_one_run(
 
     set_seed(seed)
 
-    train_set = BasicDataset(tr_dir_img, tr_dir_mask, batch_size, img_scale)
-    val_set = BasicDataset(val_dir_img, val_dir_mask, batch_size, img_scale)
+    train_set = BasicDataset(tr_dir_img, tr_dir_mask, img_scale)
+    val_set = BasicDataset(val_dir_img, val_dir_mask, img_scale)
 
     g = torch.Generator()
     g.manual_seed(seed)
@@ -672,12 +672,12 @@ def get_args():
     )
     parser.add_argument('--model-name', choices=MODEL_CHOICES, default='dilated_ddhnet')
     parser.add_argument('--n-classes', type=int, default=8)
-    parser.add_argument('--epochs', type=int, default=30)
-    parser.add_argument('--batch-sizes', type=int, nargs='+', default=[4])
+    parser.add_argument('--epochs', type=int, default=100)
+    parser.add_argument('--batch-sizes', type=int, nargs='+', default=[16])
     parser.add_argument('--lr', type=float, default=1e-5)
     parser.add_argument('--scale', type=float, default=1.0)
     parser.add_argument('--seeds', type=int, nargs='+', default=[2026, 2027, 2028])
-    parser.add_argument('--patience', type=int, default=5)
+    parser.add_argument('--patience', type=int, default=10)
     parser.add_argument('--min-delta', type=float, default=0.001)
     parser.add_argument(
         '--monitor-metric',
