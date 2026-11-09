@@ -1,5 +1,3 @@
-"""Extract DeepDDH landmarks, perform quality gating, and calculate Graf measurements."""
-
 import argparse
 import csv
 import json
@@ -21,11 +19,12 @@ SUPPORTED_MASK_EXTENSIONS = {'.png'}
 # Bony class -> index in the five-keypoint array. This preserves the mapping
 # used by the original class_id*30 implementation: 60, 90, 120, 180, 150.
 BONY_CLASS_TO_KEYPOINT = {2: 0, 3: 1, 4: 2, 6: 3, 5: 4}
+BONY_CLASS_TO_PREVIOUS_CLASS = {class_id: class_id - 1 for class_id in range(2, 7)}
 ANATOMICAL_FOREGROUND_CLASSES = tuple(range(1, 8))   # 8 total classes: background + 7
 BONY_FOREGROUND_CLASSES = tuple(range(1, 7))         # 7 total classes: background + 6
 STANDARD_PARALLEL_TOLERANCE_DEG = 5.0
 THREE_MONTHS_DAYS = 90.0
-MEASUREMENT_ALGORITHM_VERSION = '2.0-rotation-invariant'
+MEASUREMENT_ALGORITHM_VERSION = '3.0-boundary-junction'
 CLASSIFICATION_ANGLE_DECIMALS = 6
 
 
@@ -63,26 +62,96 @@ def read_class_map(path: Path, max_class_id: int, encoding: str) -> np.ndarray:
     return array
 
 
-def find_upper_edge(class_map: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
-    """Return the first foreground pixel and its class for every non-empty column."""
-    foreground = class_map != 0
-    valid_columns = np.flatnonzero(foreground.any(axis=0))
-    if valid_columns.size == 0:
-        return np.empty((0, 2), dtype=np.int32), np.empty((0,), dtype=np.int32)
+def neighborhood_contains_label(class_map: np.ndarray, label: int) -> np.ndarray:
+    """Return pixels whose 3x3 neighbourhood contains ``label``."""
+    height, width = class_map.shape
+    padded = np.pad(class_map, 1, mode='constant', constant_values=-1)
+    contains = np.zeros((height, width), dtype=bool)
+    for row_offset in range(3):
+        for column_offset in range(3):
+            contains |= (
+                padded[
+                    row_offset:row_offset + height,
+                    column_offset:column_offset + width,
+                ]
+                == label
+            )
+    return contains
 
-    rows = np.argmax(foreground[:, valid_columns], axis=0)
-    positions = np.column_stack((rows, valid_columns)).astype(np.int32)
-    labels = class_map[rows, valid_columns].astype(np.int32)
-    return positions, labels
+
+def connected_component_centroids(binary_map: np.ndarray) -> List[np.ndarray]:
+    """Return 8-connected component centroids in ``(row, column)`` order."""
+    remaining = {tuple(point) for point in np.argwhere(binary_map)}
+    centroids: List[np.ndarray] = []
+    neighbour_offsets = (
+        (-1, -1), (-1, 0), (-1, 1),
+        (0, -1),           (0, 1),
+        (1, -1),  (1, 0),  (1, 1),
+    )
+
+    while remaining:
+        start = remaining.pop()
+        component = [start]
+        stack = [start]
+        while stack:
+            row, column = stack.pop()
+            for row_offset, column_offset in neighbour_offsets:
+                neighbour = (row + row_offset, column + column_offset)
+                if neighbour in remaining:
+                    remaining.remove(neighbour)
+                    component.append(neighbour)
+                    stack.append(neighbour)
+        centroids.append(np.asarray(component, dtype=np.float64).mean(axis=0))
+    return centroids
 
 
-def extract_five_keypoints(edge_positions: np.ndarray, edge_labels: np.ndarray) -> np.ndarray:
-    """Use the first upper-edge occurrence of bony classes 2-6 as landmarks."""
+def find_external_boundary_junctions(
+    class_map: np.ndarray,
+    first_class: int,
+    second_class: int,
+) -> List[np.ndarray]:
+    """Find junctions where background and two adjacent bony classes meet.
+
+    These junctions are intrinsic to the labelled anatomy and do not depend on
+    the image row/column axes.  A 3x3 neighbourhood makes the calculation
+    tolerant of diagonal contacts in rasterised masks.
+    """
+    candidates = (
+        neighborhood_contains_label(class_map, 0)
+        & neighborhood_contains_label(class_map, first_class)
+        & neighborhood_contains_label(class_map, second_class)
+    )
+    return connected_component_centroids(candidates)
+
+
+def extract_five_keypoints(
+    class_map: np.ndarray,
+    anatomical_reference: Optional[np.ndarray],
+) -> np.ndarray:
+    """Extract bony landmarks from external class-boundary junctions.
+
+    Every landmark is the external junction between consecutive bony classes.
+    A class boundary can meet the background on two sides of a structure, so
+    the junction closest to the anatomical/labrum reference is selected.  Both
+    the junction construction and the distance comparison are invariant to a
+    common image rotation or reflection.
+    """
     keypoints = np.full((5, 2), INVALID, dtype=np.float64)
+    if anatomical_reference is None:
+        return keypoints
+
     for class_id, keypoint_index in BONY_CLASS_TO_KEYPOINT.items():
-        matches = np.flatnonzero(edge_labels == class_id)
-        if matches.size:
-            keypoints[keypoint_index] = edge_positions[matches[0]]
+        previous_class = BONY_CLASS_TO_PREVIOUS_CLASS[class_id]
+        junctions = find_external_boundary_junctions(
+            class_map,
+            previous_class,
+            class_id,
+        )
+        if junctions:
+            keypoints[keypoint_index] = min(
+                junctions,
+                key=lambda point: float(np.linalg.norm(point - anatomical_reference)),
+            )
     return keypoints
 
 
@@ -192,10 +261,10 @@ def calculate_case(
     missing_anatomical = missing_required_classes(seg_map, ANATOMICAL_FOREGROUND_CLASSES)
     missing_bony = missing_required_classes(bony_map, BONY_FOREGROUND_CLASSES)
 
-    edge_positions, edge_labels = find_upper_edge(bony_map)
-    five_keypoints = extract_five_keypoints(edge_positions, edge_labels)
-
     labrum_binary = seg_map == labrum_class
+    landmark_reference = calculate_centroid(labrum_binary)
+    five_keypoints = extract_five_keypoints(bony_map, landmark_reference)
+
     labrum_centroid = None
     if int(labrum_binary.sum()) >= min_labrum_pixels:
         labrum_centroid = calculate_centroid(labrum_binary)
@@ -245,9 +314,6 @@ def calculate_case(
         parallel_angle is not None
         and abs(float(parallel_angle)) <= STANDARD_PARALLEL_TOLERANCE_DEG
     )
-    standard_plane = anatomical_ok and bony_ok and parallel_ok
-    quality_assessment = 'standard' if standard_plane else 'non-standard'
-
     all_angles = [
         parallel_angle if parallel_angle is not None else INVALID,
         alpha_angle if alpha_angle is not None else INVALID,
@@ -259,6 +325,10 @@ def calculate_case(
         status = 'parallel_only'
     else:
         status = 'invalid'
+
+    measurement_complete = status == 'complete'
+    standard_plane = anatomical_ok and bony_ok and parallel_ok and measurement_complete
+    quality_assessment = 'standard' if standard_plane else 'non-standard'
 
     # Quality gating: non-standard images do not proceed to the final Graf classification.
     if standard_plane:
@@ -275,6 +345,7 @@ def calculate_case(
             'anatomical_all_foreground_present': anatomical_ok,
             'bony_all_foreground_present': bony_ok,
             'parallel_within_5_degrees': parallel_ok,
+            'measurement_complete': measurement_complete,
             'missing_anatomical_classes': missing_anatomical,
             'missing_bony_classes': missing_bony,
         },
@@ -385,7 +456,8 @@ def save_json(results, quality_summary, args, output_path: Path) -> None:
             'required_anatomical_foreground_classes': list(ANATOMICAL_FOREGROUND_CLASSES),
             'required_bony_foreground_classes': list(BONY_FOREGROUND_CLASSES),
             'parallel_tolerance_degrees': STANDARD_PARALLEL_TOLERANCE_DEG,
-            'decision': 'standard only if all three checks pass; otherwise non-standard',
+            'landmark_method': 'external consecutive-class junction nearest the labrum reference',
+            'decision': 'standard only if class-presence, parallel-angle, and measurement-completeness checks pass',
         },
         'graf_rule': {
             'type_I': 'alpha >= 60 degrees',
@@ -409,7 +481,8 @@ def save_csv(results: Sequence[Dict[str, object]], output_path: Path) -> None:
     fieldnames = [
         'measurement_algorithm_version', 'name', 'status', 'quality_assessment',
         'anatomical_all_foreground_present', 'bony_all_foreground_present',
-        'parallel_within_5_degrees', 'missing_anatomical_classes', 'missing_bony_classes',
+        'parallel_within_5_degrees', 'measurement_complete',
+        'missing_anatomical_classes', 'missing_bony_classes',
         'age_days', 'parallel_angle', 'alpha_angle', 'beta_angle',
         'graf_type', 'graf_description', 'labrum_pixels', 'all_key_points',
     ]
@@ -426,6 +499,7 @@ def save_csv(results: Sequence[Dict[str, object]], output_path: Path) -> None:
                 'anatomical_all_foreground_present': checks['anatomical_all_foreground_present'],
                 'bony_all_foreground_present': checks['bony_all_foreground_present'],
                 'parallel_within_5_degrees': checks['parallel_within_5_degrees'],
+                'measurement_complete': checks['measurement_complete'],
                 'missing_anatomical_classes': json.dumps(checks['missing_anatomical_classes']),
                 'missing_bony_classes': json.dumps(checks['missing_bony_classes']),
                 'age_days': result['age_days'],
