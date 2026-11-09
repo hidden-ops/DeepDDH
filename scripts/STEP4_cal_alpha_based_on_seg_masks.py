@@ -25,6 +25,8 @@ ANATOMICAL_FOREGROUND_CLASSES = tuple(range(1, 8))   # 8 total classes: backgrou
 BONY_FOREGROUND_CLASSES = tuple(range(1, 7))         # 7 total classes: background + 6
 STANDARD_PARALLEL_TOLERANCE_DEG = 5.0
 THREE_MONTHS_DAYS = 90.0
+MEASUREMENT_ALGORITHM_VERSION = '2.0-rotation-invariant'
+CLASSIFICATION_ANGLE_DECIMALS = 6
 
 
 def read_class_map(path: Path, max_class_id: int, encoding: str) -> np.ndarray:
@@ -106,6 +108,37 @@ def calculate_line_angle(point1: Sequence[float], point2: Sequence[float]) -> fl
     return angle
 
 
+def calculate_included_angle(
+    line1_point1: Sequence[float],
+    line1_point2: Sequence[float],
+    line2_point1: Sequence[float],
+    line2_point2: Sequence[float],
+) -> float:
+    """Return the rotation- and reflection-invariant angle between two lines.
+
+    The landmarks use image coordinates in ``(row, column)`` order.  Both lines
+    are treated as undirected anatomical lines, so reversing either endpoint or
+    mirroring the image does not change the returned angle.  The result is the
+    smaller included angle in the closed interval [0, 90] degrees.
+    """
+    vector1 = np.asarray(line1_point2, dtype=np.float64) - np.asarray(
+        line1_point1, dtype=np.float64
+    )
+    vector2 = np.asarray(line2_point2, dtype=np.float64) - np.asarray(
+        line2_point1, dtype=np.float64
+    )
+    norm1 = float(np.linalg.norm(vector1))
+    norm2 = float(np.linalg.norm(vector2))
+    if norm1 == 0.0 or norm2 == 0.0:
+        raise ValueError('Cannot calculate an angle from a zero-length line.')
+
+    # abs(dot) removes endpoint direction; clipping protects acos from floating
+    # point round-off near parallel and perpendicular boundary cases.
+    cosine = abs(float(np.dot(vector1, vector2))) / (norm1 * norm2)
+    cosine = float(np.clip(cosine, 0.0, 1.0))
+    return math.degrees(math.acos(cosine))
+
+
 def is_valid_point(point: Sequence[float]) -> bool:
     return bool(np.all(np.asarray(point) != INVALID))
 
@@ -126,7 +159,9 @@ def classify_graf(alpha_angle: Optional[float], age_days: Optional[float]) -> Tu
     if alpha_angle is None or not np.isfinite(alpha_angle):
         return None, None
 
-    alpha = float(alpha_angle)
+    # Avoid changing a boundary category because of sub-microdegree floating
+    # point noise from dot products and acos (for example 59.99999999999999).
+    alpha = round(float(alpha_angle), CLASSIFICATION_ANGLE_DECIMALS)
     if alpha >= 60.0:
         return 'Type I', 'Mature hip'
     if 50.0 <= alpha < 60.0:
@@ -175,6 +210,9 @@ def calculate_case(
     beta_angle = None
 
     if is_valid_point(five_keypoints[0]) and is_valid_point(five_keypoints[1]):
+        # Retain the historical field name for output compatibility. This is a
+        # signed baseline tilt relative to the image horizontal and is used only
+        # by the standard-plane quality check, not to construct alpha or beta.
         parallel_angle = -calculate_line_angle(five_keypoints[0], five_keypoints[1])
 
     if (
@@ -182,16 +220,24 @@ def calculate_case(
         and is_valid_point(five_keypoints[2])
         and is_valid_point(five_keypoints[3])
     ):
-        cut_angle = calculate_line_angle(five_keypoints[2], five_keypoints[3])
-        alpha_angle = cut_angle - parallel_angle
+        alpha_angle = calculate_included_angle(
+            five_keypoints[0],
+            five_keypoints[1],
+            five_keypoints[2],
+            five_keypoints[3],
+        )
 
     if (
         parallel_angle is not None
         and is_valid_point(five_keypoints[4])
         and labrum_centroid is not None
     ):
-        labrum_angle = calculate_line_angle(five_keypoints[4], labrum_centroid)
-        beta_angle = -labrum_angle + parallel_angle
+        beta_angle = calculate_included_angle(
+            five_keypoints[0],
+            five_keypoints[1],
+            five_keypoints[4],
+            labrum_centroid,
+        )
 
     anatomical_ok = len(missing_anatomical) == 0
     bony_ok = len(missing_bony) == 0
@@ -221,6 +267,7 @@ def calculate_case(
         graf_type, graf_description = None, 'Not evaluated because the image was classified as non-standard'
 
     return {
+        'measurement_algorithm_version': MEASUREMENT_ALGORITHM_VERSION,
         'name': case_name,
         'status': status,
         'quality_assessment': quality_assessment,
@@ -332,6 +379,7 @@ def generate_results(
 def save_json(results, quality_summary, args, output_path: Path) -> None:
     output_path.parent.mkdir(parents=True, exist_ok=True)
     payload = {
+        'measurement_algorithm_version': MEASUREMENT_ALGORITHM_VERSION,
         'quality_assessment': quality_summary,
         'quality_rule': {
             'required_anatomical_foreground_classes': list(ANATOMICAL_FOREGROUND_CLASSES),
@@ -359,7 +407,7 @@ def save_json(results, quality_summary, args, output_path: Path) -> None:
 def save_csv(results: Sequence[Dict[str, object]], output_path: Path) -> None:
     output_path.parent.mkdir(parents=True, exist_ok=True)
     fieldnames = [
-        'name', 'status', 'quality_assessment',
+        'measurement_algorithm_version', 'name', 'status', 'quality_assessment',
         'anatomical_all_foreground_present', 'bony_all_foreground_present',
         'parallel_within_5_degrees', 'missing_anatomical_classes', 'missing_bony_classes',
         'age_days', 'parallel_angle', 'alpha_angle', 'beta_angle',
@@ -371,6 +419,7 @@ def save_csv(results: Sequence[Dict[str, object]], output_path: Path) -> None:
         for result in results:
             checks = result['quality_checks']
             writer.writerow({
+                'measurement_algorithm_version': result['measurement_algorithm_version'],
                 'name': result['name'],
                 'status': result['status'],
                 'quality_assessment': result['quality_assessment'],
