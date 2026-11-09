@@ -97,7 +97,6 @@ This label mapping is dataset-specific. Confirm it against the annotation protoc
 ├── model/                            # comparison segmentation models
 ├── attention/                        # attention and feature-fusion modules
 ├── utils/                            # datasets, losses, metrics, inference loader
-├── tests/                            # geometry and differentiability regressions
 ├── data/
 │   ├── README.md                     # detailed data placement instructions
 │   ├── Training/                     # empty placeholders
