@@ -58,13 +58,15 @@ bony class 6 -> K3
 bony class 5 -> K4
 ```
 
-For line angle `angle(P, Q)` in degrees, STEP4 calculates:
+STEP4 keeps the signed baseline tilt only for the horizontal-plane quality check. The diagnostic angles are calculated directly between undirected anatomical lines:
 
 ```text
-parallel = -angle(K0, K1)
-alpha    =  angle(K2, K3) - parallel
-beta     = -angle(K4, labrum_centroid) + parallel
+parallel = -signed_line_angle(K0, K1)
+alpha    = included_angle(line(K0, K1), line(K2, K3))
+beta     = included_angle(line(K0, K1), line(K4, labrum_centroid))
 ```
+
+`included_angle` uses `acos(abs(dot(u, v)) / (||u|| ||v||))` and therefore returns the smaller angle in `[0°, 90°]`. It is invariant to common image rotation, horizontal mirroring, and reversal of either line's endpoints. JSON and CSV outputs record `measurement_algorithm_version` so measurements made by the corrected implementation can be distinguished from legacy results.
 
 ### Grouped Graf rules used in STEP4
 
@@ -95,6 +97,7 @@ This label mapping is dataset-specific. Confirm it against the annotation protoc
 ├── model/                            # comparison segmentation models
 ├── attention/                        # attention and feature-fusion modules
 ├── utils/                            # datasets, losses, metrics, inference loader
+├── tests/                            # geometry and differentiability regressions
 ├── data/
 │   ├── README.md                     # detailed data placement instructions
 │   ├── Training/                     # empty placeholders
@@ -228,11 +231,17 @@ The default STEP2 objective is:
 
 ```text
 L_total = L_seg + L_bony
-L_seg   = CE_seg + Focal_seg + 0.1 × CentroidMSE_seg
+L_seg   = CE_seg + Focal_seg + 0.1 × SoftCentroidMSE_seg
 L_bony  = CE_bony + Focal_bony
 ```
 
-Pass `--use-bony-centroid-loss` to add the bony centroid term. The best model is selected by total validation loss by default.
+The default `soft` centroid loss calculates probability-weighted centroids in normalized image coordinates and remains differentiable with respect to the logits. Ground-truth-absent classes and background are excluded. Available compatibility modes are:
+
+- `--centroid-loss-mode soft`: corrected differentiable implementation (default);
+- `--centroid-loss-mode legacy-hard`: historical `argmax`/one-hot calculation, retained only for reproducing archived runs; it has no logits gradient;
+- `--centroid-loss-mode off`: disable centroid terms.
+
+Pass `--use-bony-centroid-loss` to add the bony centroid term. The best model is selected by total validation loss by default. Because `soft` changes the training objective, checkpoints trained with `legacy-hard` must not be described as having been trained with the corrected differentiable centroid constraint.
 
 Default output:
 
@@ -286,7 +295,8 @@ STEP4 requires exactly matched PNG stems between `--seg-dir` and `--bony-dir`. `
 
 The JSON file contains:
 
-- a batch-level `quality_assessment` derived from parallel angles;
+- `measurement_algorithm_version`, identifying the corrected angle implementation;
+- a batch-level `quality_assessment` derived from class-presence and parallel-angle checks;
 - `all_key_points`, with five bony points followed by the labrum centroid;
 - `all_angles` in `[parallel, alpha, beta]` order;
 - named angle fields, per-case validity `status`, and labrum pixel count.
